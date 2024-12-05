@@ -39,6 +39,7 @@ db.connect();
 //use user"x" to find either socketId or username from "x"
 let userSockets = {};
 let usernames = {};
+let games = [];
 
 app.post("/register", async (req, res) => {
   try {
@@ -108,7 +109,7 @@ io.on("connection", async (socket) => {
     io.to(socket.id).emit("login", "Connection Success");
 
     userSockets[socket.id] = socket.user.username;
-    usernames[socket.user.username] = socket.id;
+    usernames[socket.user.username] = socket;
   } catch (err) {
     io.to(socket.id).emit("login", err.message);
     socket.disconnect(true);
@@ -151,7 +152,7 @@ io.on("connection", async (socket) => {
       );
 
       if (usernames[data.username]) {
-        io.to(usernames[data.username]).emit(
+        io.to(usernames[data.username].id).emit(
           "notification",
           "You have received an invitation from " + socket.user.username
         );
@@ -175,9 +176,99 @@ io.on("connection", async (socket) => {
       const invitations = response.rows
         .map((invite) => `${invite.INV_Inviter}`)
         .join("\n");
-      io.to(socket.id).emit("reply", `You have invitations from : \n ${invitations}`)
+      io.to(socket.id).emit(
+        "reply",
+        `You have invitations from : \n ${invitations}`
+      );
     } catch (err) {
       io.to(socket.id).emit("error", "Internal server error");
     }
+  });
+
+  socket.on("acceptInvite", async (data) => {
+    try {
+      if (socket.gameId != null) {
+        throw new Error("You are currently in a game.");
+      } else if (!usernames[data.username]) {
+        throw new Error("The other player is not online.");
+      } else if (usernames[data.username].gameId != null) {
+        throw new Error("The other player is currently in a game.");
+      } else {
+        const response = await db.query(
+          `INSERT INTO "GAME" ("G_PlayerX", "G_PlayerO") VALUES (
+            $1, $2) RETURNING "G_Id"`,
+          [data.username, socket.user.username]
+        );
+        const gameId = response.rows[0].G_Id;
+        socket.gameId = gameId;
+        usernames[data.username].gameId = gameId;
+        io.to(usernames[data.username].id).emit("inviteAccepted", { gameId });
+        io.to(usernames[data.username].id).emit(
+          "notification",
+          `Your invitation to ${data.username} is accepted. Game starts!!`
+        );
+        games[gameId] = {
+          board: [null, null, null, null, null, null, null, null, null],
+          playerX: data.username,
+          playerO: socket.user.username,
+          turn: "X",
+        };
+      }
+    } catch (err) {
+      io.to(socket.id).emit("error", err.message);
+    }
+  });
+
+  socket.on("inviteAccepted", (data) => {
+    socket.gameId = data.gameId;
+  });
+
+  socket.on("play", async (data) => {
+    if (socket.gameId === null) {
+      io.to(socket.id).emit(
+        "error",
+        "You are not currently in a game right now"
+      );
+    } else if (
+      (games[socket.gameId].turn === "X" &&
+        games[socket.gameId].playerX != socket.user.username) ||
+      (games[socket.gameId].turn === "O" &&
+        games[socket.gameId].playerO != socket.user.username)
+    ) {
+      io.to(socket.id).emit("error", "Sorry it's not your turn yet.");
+    } else if (data.tile < 1 || data.tile > 9) {
+      io.to(socket.id).emit("error", "Please select only 1 - 9");
+    } else if (games[socket.gameId].board[data.tile - 1] != null) {
+      io.to(socket.id).emit("error", "That tile already occupied.");
+    } else {
+      games[socket.gameId].board[data.tile - 1] = games[socket.gameId].turn;
+      if (games[socket.gameId].turn === "X") {
+        games[socket.gameId].turn = "O";
+      } else {
+        games[socket.gameId].turn = "X";
+      }
+      //check win
+
+      //form display
+      const grid = games[socket.gameId].board.map((item, index) =>
+        item === null ? index + 1 : item
+      );
+
+      const gridRows = [];
+      while (grid.length) {
+        gridRows.push(grid.splice(0, 3));
+      }
+
+      const gridString = gridRows.map((row) => row.join(" | ")).join("\n");
+      const nextPlayer = games[socket.gameId].turn === "X" ? games[socket.gameId].playerX : games[socket.gameId].playerO
+      io.to(usernames[nextPlayer].id).emit(
+        "notification",
+        `Hey. It's your turn to play. The board is : \n ${gridString}`
+      );
+    }
+  });
+
+  socket.on("showSocket", () => {
+    console.log(socket);
   });
 });
