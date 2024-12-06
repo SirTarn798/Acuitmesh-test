@@ -5,6 +5,8 @@ import { configDotenv } from "dotenv";
 import pg from "pg";
 import bcrypt from "bcryptjs";
 import { encrypt, decrypt } from "./lib/auth.js";
+import { checkWinner } from "./lib/game.js";
+import { getBoard } from "./lib/boardDisplay.js";
 
 configDotenv.apply();
 
@@ -208,7 +210,7 @@ io.on("connection", async (socket) => {
           `Your invitation to ${data.username} is accepted. Game starts!!`
         );
         games[gameId] = {
-          board: [null, null, null, null, null, null, null, null, null],
+          board: ["X", "X", null, null, null, null, null, null, null],
           playerX: data.username,
           playerO: socket.user.username,
           turn: "X",
@@ -224,6 +226,7 @@ io.on("connection", async (socket) => {
   });
 
   socket.on("play", async (data) => {
+    console.log(socket.gameId)
     if (socket.gameId === null) {
       io.to(socket.id).emit(
         "error",
@@ -248,27 +251,52 @@ io.on("connection", async (socket) => {
         games[socket.gameId].turn = "X";
       }
       //check win
-
-      //form display
-      const grid = games[socket.gameId].board.map((item, index) =>
-        item === null ? index + 1 : item
-      );
-
-      const gridRows = [];
-      while (grid.length) {
-        gridRows.push(grid.splice(0, 3));
+      const result = checkWinner(games[socket.gameId].board);
+      if (result === "X" || result === "O") {
+        try {
+          const resposnse = await db.query(
+            `UPDATE "GAME" SET 
+            "G_Result" = $1 WHERE "G_Id" = $2`,
+            [result, socket.gameId]
+          );
+          const gameId = socket.gameId;
+          io.to(usernames[games[gameId].playerX].id).emit(
+            "notification",
+            `Player ${result} has won the game!! \n ${getBoard(
+              games[gameId].board
+            )}`
+          );
+          io.to(usernames[games[gameId].playerX].id).emit("endgame");
+          io.to(usernames[games[gameId].playerO].id).emit(
+            "notification",
+            `Player ${result} has won the game!! \n ${getBoard(
+              games[gameId].board
+            )}`
+          );
+          io.to(usernames[games[gameId].playerO].id).emit("endgame");
+          delete games[gameId];
+        } catch (err) {
+          console.log(err.message);
+        }
+      } else {
+        const board = getBoard(games[socket.gameId].board);
+        const nextPlayer =
+          games[socket.gameId].turn === "X"
+            ? games[socket.gameId].playerX
+            : games[socket.gameId].playerO;
+        io.to(usernames[nextPlayer].id).emit(
+          "notification",
+          `Hey. It's your turn to play. The board is : \n ${board}`
+        );
       }
-
-      const gridString = gridRows.map((row) => row.join(" | ")).join("\n");
-      const nextPlayer = games[socket.gameId].turn === "X" ? games[socket.gameId].playerX : games[socket.gameId].playerO
-      io.to(usernames[nextPlayer].id).emit(
-        "notification",
-        `Hey. It's your turn to play. The board is : \n ${gridString}`
-      );
     }
   });
 
   socket.on("showSocket", () => {
     console.log(socket);
+  });
+
+  socket.on("endgame", () => {
+    socket.gameId = null;
   });
 });
