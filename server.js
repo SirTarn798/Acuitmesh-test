@@ -199,7 +199,7 @@ io.on("connection", async (socket) => {
         const response = await db.query(
           `INSERT INTO "GAME" ("G_PlayerX", "G_PlayerO") VALUES (
             $1, $2) RETURNING "G_Id"`,
-          [data.username, socket.user.username]
+          [socket.user.username, data.username]
         );
         const gameId = response.rows[0].G_Id;
         socket.gameId = gameId;
@@ -211,8 +211,8 @@ io.on("connection", async (socket) => {
         );
         games[gameId] = {
           board: ["X", "X", null, null, null, null, null, null, null],
-          playerX: data.username,
-          playerO: socket.user.username,
+          playerX: socket.user.username,
+          playerO: data.username,
           turn: "X",
         };
       }
@@ -221,12 +221,7 @@ io.on("connection", async (socket) => {
     }
   });
 
-  socket.on("inviteAccepted", (data) => {
-    socket.gameId = data.gameId;
-  });
-
   socket.on("play", async (data) => {
-    console.log(socket.gameId)
     if (socket.gameId === null) {
       io.to(socket.id).emit(
         "error",
@@ -252,7 +247,7 @@ io.on("connection", async (socket) => {
       }
       //check win
       const result = checkWinner(games[socket.gameId].board);
-      if (result === "X" || result === "O") {
+      if (result === "X" || result === "O" || result === "Draw") {
         try {
           const resposnse = await db.query(
             `UPDATE "GAME" SET 
@@ -260,20 +255,22 @@ io.on("connection", async (socket) => {
             [result, socket.gameId]
           );
           const gameId = socket.gameId;
-          io.to(usernames[games[gameId].playerX].id).emit(
+          io.to(usernames[games[gameId].playerX].id).emit(result === "Draw" ? `The game result in a Draw!!` :
             "notification",
             `Player ${result} has won the game!! \n ${getBoard(
               games[gameId].board
             )}`
           );
-          io.to(usernames[games[gameId].playerX].id).emit("endgame");
-          io.to(usernames[games[gameId].playerO].id).emit(
+          io.to(usernames[games[gameId].playerO].id).emit(result === "Draw" ? `The game result in a Draw!!` :
             "notification",
             `Player ${result} has won the game!! \n ${getBoard(
               games[gameId].board
             )}`
           );
-          io.to(usernames[games[gameId].playerO].id).emit("endgame");
+          socket.gameId = null;
+          usernames[games[gameId].playerX].gameId = null;
+          usernames[games[gameId].playerO].gameId = null;
+
           delete games[gameId];
         } catch (err) {
           console.log(err.message);
@@ -292,11 +289,84 @@ io.on("connection", async (socket) => {
     }
   });
 
+  socket.on("getHistory", async () => {
+    try {
+      const response = await db.query(
+        `SELECT * FROM "GAME" WHERE "G_PlayerX" = $1 OR "G_PlayerO" = $1`, 
+        [socket.user.username]
+      );
+  
+      const formattedHistory = response.rows.map(game => {
+        const isPlayerX = game.G_PlayerX === socket.user.username;
+        const opponent = isPlayerX ? game.G_PlayerO : game.G_PlayerX;
+  
+        let result;
+        if (game.G_Result === null) {
+          result = "Game in progress";
+        } else if (game.G_Result === "Draw") {
+          result = "draw";
+        } else if ((game.G_Result === "X" && isPlayerX) || (game.G_Result === "O" && !isPlayerX)) {
+          result = "win";
+        } else {
+          result = "lose";
+        }
+  
+        return `${opponent} - ${result}`;
+      });
+  
+      io.to(socket.id).emit("reply", formattedHistory);
+    } catch (err) {
+      console.error(err);
+    }
+  });
+
+  socket.on("disconnect", async () => {
+    try {
+      // Check if the user was in an ongoing game
+      if (socket.gameId !== null) {
+        const gameId = socket.gameId;
+        const game = games[gameId];
+        
+        // Determine the result based on the disconnecting player
+        const result = game.playerX === socket.user.username ? "O" : "X";
+        
+        // Update game result in the database
+        await db.query(
+          `UPDATE "GAME" SET "G_Result" = $1 WHERE "G_Id" = $2`,
+          [result, gameId]
+        );
+        
+        // Notify the other player about the win
+        const otherPlayer = result === "X" ? game.playerX : game.playerO;
+        if (usernames[otherPlayer]) {
+          io.to(usernames[otherPlayer].id).emit(
+            "notification", 
+            `${socket.user.username} disconnected. You win the game!`
+          );
+        }
+        
+        // Clean up game state
+        delete games[gameId];
+        
+        // Reset game IDs for both players
+        if (usernames[game.playerX]) {
+          usernames[game.playerX].gameId = null;
+        }
+        if (usernames[game.playerO]) {
+          usernames[game.playerO].gameId = null;
+        }
+      }
+      
+      // Remove user from tracking objects
+      delete userSockets[socket.id];
+      delete usernames[socket.user.username];
+    } catch (err) {
+      console.error("Disconnect handler error:", err);
+    }
+  });
+  
   socket.on("showSocket", () => {
     console.log(socket);
   });
 
-  socket.on("endgame", () => {
-    socket.gameId = null;
-  });
 });
