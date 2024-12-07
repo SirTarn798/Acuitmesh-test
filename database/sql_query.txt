@@ -1,0 +1,56 @@
+BEGIN;
+
+
+CREATE TABLE IF NOT EXISTS public."GAME"
+(
+    "G_Id" uuid NOT NULL DEFAULT gen_random_uuid(),
+    "G_PlayerX" character varying(32) COLLATE pg_catalog."default" NOT NULL,
+    "G_PlayerO" character varying(32) COLLATE pg_catalog."default" NOT NULL,
+    "G_Result" character varying(16) COLLATE pg_catalog."default",
+    CONSTRAINT "Game_pkey" PRIMARY KEY ("G_Id")
+);
+
+CREATE TABLE IF NOT EXISTS public."INVITATION"
+(
+    "INV_Id" uuid NOT NULL DEFAULT gen_random_uuid(),
+    "INV_Inviter" character varying(32) COLLATE pg_catalog."default" NOT NULL,
+    "INV_Invitee" character varying(32) COLLATE pg_catalog."default" NOT NULL,
+    "INV_Status" boolean,
+    CONSTRAINT "INVITATION_pkey" PRIMARY KEY ("INV_Id")
+);
+
+CREATE TABLE IF NOT EXISTS public."USER"
+(
+    "U_Username" character varying(32) COLLATE pg_catalog."default" NOT NULL,
+    "U_Password" text COLLATE pg_catalog."default" NOT NULL,
+    CONSTRAINT "USER_pkey" PRIMARY KEY ("U_Username")
+);
+
+ALTER TABLE IF EXISTS public."GAME"
+    ADD CONSTRAINT "Game_G_PlayerO_fkey" FOREIGN KEY ("G_PlayerO")
+    REFERENCES public."USER" ("U_Username") MATCH SIMPLE
+    ON UPDATE NO ACTION
+    ON DELETE NO ACTION;
+
+
+ALTER TABLE IF EXISTS public."GAME"
+    ADD CONSTRAINT "Game_G_PlayerX_fkey" FOREIGN KEY ("G_PlayerX")
+    REFERENCES public."USER" ("U_Username") MATCH SIMPLE
+    ON UPDATE NO ACTION
+    ON DELETE NO ACTION;
+
+
+ALTER TABLE IF EXISTS public."INVITATION"
+    ADD CONSTRAINT "INVITATION_INV_Invitee_fkey" FOREIGN KEY ("INV_Invitee")
+    REFERENCES public."USER" ("U_Username") MATCH SIMPLE
+    ON UPDATE NO ACTION
+    ON DELETE NO ACTION;
+
+
+ALTER TABLE IF EXISTS public."INVITATION"
+    ADD CONSTRAINT "INVITATION_INV_Inviter_fkey" FOREIGN KEY ("INV_Inviter")
+    REFERENCES public."USER" ("U_Username") MATCH SIMPLE
+    ON UPDATE NO ACTION
+    ON DELETE NO ACTION;
+
+END;
