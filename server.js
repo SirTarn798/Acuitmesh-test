@@ -160,6 +160,7 @@ io.on("connection", async (socket) => {
         );
       }
     } catch (err) {
+      //In case of there's a invitation ongoing
       if (err.code === "23505") {
         io.to(socket.id).emit(
           "error",
@@ -189,6 +190,7 @@ io.on("connection", async (socket) => {
 
   socket.on("acceptInvite", async (data) => {
     try {
+      //handle unsupported scenarioes
       if (socket.gameId != null) {
         throw new Error("You are currently in a game.");
       } else if (!usernames[data.username]) {
@@ -196,25 +198,41 @@ io.on("connection", async (socket) => {
       } else if (usernames[data.username].gameId != null) {
         throw new Error("The other player is currently in a game.");
       } else {
-        const response = await db.query(
-          `INSERT INTO "GAME" ("G_PlayerX", "G_PlayerO") VALUES (
-            $1, $2) RETURNING "G_Id"`,
+        let response = await db.query(
+          `SELECT * FROM "INVITATION" WHERE "INV_Intitee" = $1 AND "INV_Inviter" = $2 AND "INV_Status" IS NULL`,
           [socket.user.username, data.username]
         );
-        const gameId = response.rows[0].G_Id;
-        socket.gameId = gameId;
-        usernames[data.username].gameId = gameId;
-        io.to(usernames[data.username].id).emit("inviteAccepted", { gameId });
-        io.to(usernames[data.username].id).emit(
-          "notification",
-          `Your invitation to ${data.username} is accepted. Game starts!!`
-        );
-        games[gameId] = {
-          board: ["X", "X", null, null, null, null, null, null, null],
-          playerX: socket.user.username,
-          playerO: data.username,
-          turn: "X",
-        };
+        const invite = response.rows[0];
+        //update invitation
+        if (invite) {
+          await db.query(
+            `UPDATE "INVITATION" SET "INV_Status" = true WHERE "INV_Id" = $1`,
+            [invite.INV_Id]
+          );
+
+          //set up the match
+          response = await db.query(
+            `INSERT INTO "GAME" ("G_PlayerX", "G_PlayerO") VALUES (
+            $1, $2) RETURNING "G_Id"`,
+            [socket.user.username, data.username]
+          );
+          const gameId = response.rows[0].G_Id;
+          socket.gameId = gameId;
+          usernames[data.username].gameId = gameId;
+          io.to(usernames[data.username].id).emit("inviteAccepted", { gameId });
+          io.to(usernames[data.username].id).emit(
+            "notification",
+            `Your invitation to ${data.username} is accepted. Game starts!!`
+          );
+          games[gameId] = {
+            board: ["X", "X", null, null, null, null, null, null, null],
+            playerX: socket.user.username,
+            playerO: data.username,
+            turn: "X",
+          };
+        } else {
+          io.to(socket.id).emit("error", "You don't have an active invitation from that player.")
+        }
       }
     } catch (err) {
       io.to(socket.id).emit("error", err.message);
@@ -222,6 +240,8 @@ io.on("connection", async (socket) => {
   });
 
   socket.on("play", async (data) => {
+
+    //handle unsupported scenarioes
     if (socket.gameId === null) {
       io.to(socket.id).emit(
         "error",
@@ -239,12 +259,15 @@ io.on("connection", async (socket) => {
     } else if (games[socket.gameId].board[data.tile - 1] != null) {
       io.to(socket.id).emit("error", "That tile already occupied.");
     } else {
+
+      //change tile
       games[socket.gameId].board[data.tile - 1] = games[socket.gameId].turn;
       if (games[socket.gameId].turn === "X") {
         games[socket.gameId].turn = "O";
       } else {
         games[socket.gameId].turn = "X";
       }
+
       //check win
       const result = checkWinner(games[socket.gameId].board);
       if (result === "X" || result === "O" || result === "Draw") {
@@ -255,14 +278,16 @@ io.on("connection", async (socket) => {
             [result, socket.gameId]
           );
           const gameId = socket.gameId;
-          io.to(usernames[games[gameId].playerX].id).emit(result === "Draw" ? `The game result in a Draw!!` :
-            "notification",
+
+          //Notify players
+          io.to(usernames[games[gameId].playerX].id).emit(
+            result === "Draw" ? `The game result in a Draw!!` : "notification",
             `Player ${result} has won the game!! \n ${getBoard(
               games[gameId].board
             )}`
           );
-          io.to(usernames[games[gameId].playerO].id).emit(result === "Draw" ? `The game result in a Draw!!` :
-            "notification",
+          io.to(usernames[games[gameId].playerO].id).emit(
+            result === "Draw" ? `The game result in a Draw!!` : "notification",
             `Player ${result} has won the game!! \n ${getBoard(
               games[gameId].board
             )}`
@@ -276,6 +301,7 @@ io.on("connection", async (socket) => {
           console.log(err.message);
         }
       } else {
+        //Game continues
         const board = getBoard(games[socket.gameId].board);
         const nextPlayer =
           games[socket.gameId].turn === "X"
@@ -292,28 +318,32 @@ io.on("connection", async (socket) => {
   socket.on("getHistory", async () => {
     try {
       const response = await db.query(
-        `SELECT * FROM "GAME" WHERE "G_PlayerX" = $1 OR "G_PlayerO" = $1`, 
+        `SELECT * FROM "GAME" WHERE "G_PlayerX" = $1 OR "G_PlayerO" = $1`,
         [socket.user.username]
       );
-  
-      const formattedHistory = response.rows.map(game => {
+
+      //format this result
+      const formattedHistory = response.rows.map((game) => {
         const isPlayerX = game.G_PlayerX === socket.user.username;
         const opponent = isPlayerX ? game.G_PlayerO : game.G_PlayerX;
-  
+
         let result;
         if (game.G_Result === null) {
           result = "Game in progress";
         } else if (game.G_Result === "Draw") {
           result = "draw";
-        } else if ((game.G_Result === "X" && isPlayerX) || (game.G_Result === "O" && !isPlayerX)) {
+        } else if (
+          (game.G_Result === "X" && isPlayerX) ||
+          (game.G_Result === "O" && !isPlayerX)
+        ) {
           result = "win";
         } else {
           result = "lose";
         }
-  
+
         return `${opponent} - ${result}`;
       });
-  
+
       io.to(socket.id).emit("reply", formattedHistory);
     } catch (err) {
       console.error(err);
@@ -326,28 +356,28 @@ io.on("connection", async (socket) => {
       if (socket.gameId !== null) {
         const gameId = socket.gameId;
         const game = games[gameId];
-        
+
         // Determine the result based on the disconnecting player
         const result = game.playerX === socket.user.username ? "O" : "X";
-        
+
         // Update game result in the database
-        await db.query(
-          `UPDATE "GAME" SET "G_Result" = $1 WHERE "G_Id" = $2`,
-          [result, gameId]
-        );
-        
+        await db.query(`UPDATE "GAME" SET "G_Result" = $1 WHERE "G_Id" = $2`, [
+          result,
+          gameId,
+        ]);
+
         // Notify the other player about the win
         const otherPlayer = result === "X" ? game.playerX : game.playerO;
         if (usernames[otherPlayer]) {
           io.to(usernames[otherPlayer].id).emit(
-            "notification", 
+            "notification",
             `${socket.user.username} disconnected. You win the game!`
           );
         }
-        
+
         // Clean up game state
         delete games[gameId];
-        
+
         // Reset game IDs for both players
         if (usernames[game.playerX]) {
           usernames[game.playerX].gameId = null;
@@ -356,7 +386,7 @@ io.on("connection", async (socket) => {
           usernames[game.playerO].gameId = null;
         }
       }
-      
+
       // Remove user from tracking objects
       delete userSockets[socket.id];
       delete usernames[socket.user.username];
@@ -364,9 +394,9 @@ io.on("connection", async (socket) => {
       console.error("Disconnect handler error:", err);
     }
   });
-  
+
+  //debigging purposes
   socket.on("showSocket", () => {
     console.log(socket);
   });
-
 });
