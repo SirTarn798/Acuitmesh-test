@@ -46,6 +46,7 @@ node .\server.js
 ```
 ### 7. สร้าง ACCOUNT โดยใช้ Username เป็น XO-BOT ก่อนเริ่มใช้งาน
 ### 8. เริ่มใช้งานได้โดยใช้ Postman collection ตามที่ให้ไว้เป็น Template หรือลองเขียน Request เอง
+### *** โปรดตรวจสอบให้แน่ใจว่า Request แต่ละอันกำลังฟัง Event login, reply, error และ notification เพื่อการแสดงผลที่ถูกต้องและต้องมี Header authorization ด้วย
 
 
 
