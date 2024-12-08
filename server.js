@@ -7,6 +7,7 @@ import bcrypt from "bcryptjs";
 import { encrypt, decrypt } from "./lib/auth.js";
 import { checkWinner } from "./lib/game.js";
 import { getBoard } from "./lib/boardDisplay.js";
+import { getBestMove } from "./lib/aiLogic.js";
 
 configDotenv.apply();
 
@@ -199,7 +200,7 @@ io.on("connection", async (socket) => {
         throw new Error("The other player is currently in a game.");
       } else {
         let response = await db.query(
-          `SELECT * FROM "INVITATION" WHERE "INV_Intitee" = $1 AND "INV_Inviter" = $2 AND "INV_Status" IS NULL`,
+          `SELECT * FROM "INVITATION" WHERE "INV_Invitee" = $1 AND "INV_Inviter" = $2 AND "INV_Status" IS NULL`,
           [socket.user.username, data.username]
         );
         const invite = response.rows[0];
@@ -219,19 +220,21 @@ io.on("connection", async (socket) => {
           const gameId = response.rows[0].G_Id;
           socket.gameId = gameId;
           usernames[data.username].gameId = gameId;
-          io.to(usernames[data.username].id).emit("inviteAccepted", { gameId });
           io.to(usernames[data.username].id).emit(
             "notification",
             `Your invitation to ${data.username} is accepted. Game starts!!`
           );
           games[gameId] = {
-            board: ["X", "X", null, null, null, null, null, null, null],
+            board: [null, null, null, null, null, null, null, null, null],
             playerX: socket.user.username,
             playerO: data.username,
             turn: "X",
           };
         } else {
-          io.to(socket.id).emit("error", "You don't have an active invitation from that player.")
+          io.to(socket.id).emit(
+            "error",
+            "You don't have an active invitation from that player."
+          );
         }
       }
     } catch (err) {
@@ -240,7 +243,6 @@ io.on("connection", async (socket) => {
   });
 
   socket.on("play", async (data) => {
-
     //handle unsupported scenarioes
     if (socket.gameId === null) {
       io.to(socket.id).emit(
@@ -259,7 +261,6 @@ io.on("connection", async (socket) => {
     } else if (games[socket.gameId].board[data.tile - 1] != null) {
       io.to(socket.id).emit("error", "That tile already occupied.");
     } else {
-
       //change tile
       games[socket.gameId].board[data.tile - 1] = games[socket.gameId].turn;
       if (games[socket.gameId].turn === "X") {
@@ -279,21 +280,28 @@ io.on("connection", async (socket) => {
           );
           const gameId = socket.gameId;
 
-          //Notify players
-          io.to(usernames[games[gameId].playerX].id).emit(
-            result === "Draw" ? `The game result in a Draw!!` : "notification",
-            `Player ${result} has won the game!! \n ${getBoard(
-              games[gameId].board
-            )}`
-          );
+          if (!games[socket.gameId].bot) {
+            io.to(usernames[games[gameId].playerX].id).emit(
+              "notification",
+              result === "Draw"
+                ? `The game result in a Draw!!`
+                : `Player ${result} has won the game!! \n ${getBoard(
+                    games[gameId].board
+                  )}`
+            );
+          }
           io.to(usernames[games[gameId].playerO].id).emit(
-            result === "Draw" ? `The game result in a Draw!!` : "notification",
-            `Player ${result} has won the game!! \n ${getBoard(
-              games[gameId].board
-            )}`
+            "notification",
+            result === "Draw"
+              ? `The game result in a Draw!!`
+              : `Player ${result} has won the game!! \n ${getBoard(
+                  games[gameId].board
+                )}`
           );
           socket.gameId = null;
-          usernames[games[gameId].playerX].gameId = null;
+          if (!games[gameId].bot) {
+            usernames[games[gameId].playerX].gameId = null;
+          }
           usernames[games[gameId].playerO].gameId = null;
 
           delete games[gameId];
@@ -302,15 +310,63 @@ io.on("connection", async (socket) => {
         }
       } else {
         //Game continues
+        //If playing vs bot
+        if (games[socket.gameId].bot) {
+          const move = getBestMove(games[socket.gameId].board); // Bot's move
+          games[socket.gameId].board[move] = "X"; // Update the board with the bot's move
+          games[socket.gameId].turn = "O";
+          const botWinCheck = checkWinner(games[socket.gameId].board); // Check if the bot won
+          if (
+            botWinCheck === "X" ||
+            botWinCheck === "O" ||
+            botWinCheck === "Draw"
+          ) {
+            try {
+              const response = await db.query(
+                `UPDATE "GAME" SET "G_Result" = $1 WHERE "G_Id" = $2`,
+                [botWinCheck, socket.gameId]
+              );
+
+              const gameId = socket.gameId;
+
+              // Notify the player about the game's result
+              io.to(socket.id).emit(
+                "notification",
+                botWinCheck === "Draw"
+                  ? `The game resulted in a Draw! The final board is: \n ${getBoard(
+                      games[gameId].board
+                    )}`
+                  : `The bot has won the game! The final board is: \n ${getBoard(
+                      games[gameId].board
+                    )}`
+              );
+
+              // Clean up game state
+              socket.gameId = null;
+              delete games[gameId];
+              return;
+            } catch (err) {
+              console.log(err.message);
+            }
+          }
+        }
+        // Game continues, notify the player
         const board = getBoard(games[socket.gameId].board);
-        const nextPlayer =
-          games[socket.gameId].turn === "X"
-            ? games[socket.gameId].playerX
-            : games[socket.gameId].playerO;
-        io.to(usernames[nextPlayer].id).emit(
-          "notification",
-          `Hey. It's your turn to play. The board is : \n ${board}`
-        );
+        if (games[socket.gameId].bot) {
+          io.to(socket.id).emit(
+            "notification",
+            `Hey. It's your turn to play. The board is : \n ${board}`
+          );
+        } else {
+          const nextPlayer =
+            games[socket.gameId].turn === "X"
+              ? games[socket.gameId].playerX
+              : games[socket.gameId].playerO;
+          io.to(usernames[nextPlayer].id).emit(
+            "notification",
+            `Hey. It's your turn to play. The board is : \n ${board}`
+          );
+        }
       }
     }
   });
@@ -392,6 +448,41 @@ io.on("connection", async (socket) => {
       delete usernames[socket.user.username];
     } catch (err) {
       console.error("Disconnect handler error:", err);
+    }
+  });
+
+  socket.on("playWithBot", async () => {
+    try {
+      //handle unsupported scenarioes
+      if (socket.gameId != null) {
+        throw new Error("You are currently in a game.");
+      } else {
+        //set up the match
+        const response = await db.query(
+          `INSERT INTO "GAME" ("G_PlayerX", "G_PlayerO") VALUES (
+            $1, $2) RETURNING "G_Id"`,
+          [socket.user.username, "XO-BOT"]
+        );
+        const gameId = response.rows[0].G_Id;
+        socket.gameId = gameId;
+        games[gameId] = {
+          board: [null, null, null, null, null, null, null, null, null],
+          playerX: "XO-BOT",
+          playerO: socket.user.username,
+          turn: "O",
+          bot: true,
+        };
+        const move = getBestMove(games[gameId].board);
+        games[gameId].board[move] = "X";
+        io.to(socket.id).emit(
+          "notification",
+          `The game has started and the bot has made a move. The board is \n ${getBoard(
+            games[gameId].board
+          )}`
+        );
+      }
+    } catch (err) {
+      io.to(socket.id).emit("error", err.message);
     }
   });
 
